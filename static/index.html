@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ZenithCore Console</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" />
+<link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+
+<!-- ========================= background video ========================= -->
+<video id="bgVideo" class="bg-video" autoplay loop muted playsinline preload="auto">
+  <source src="/static/video.mp4" type="video/mp4" />
+</video>
+<div class="bg-video-overlay"></div>
+
+<!-- ============================ auth gate ============================ -->
+<div class="gate" id="gate">
+  <form class="gate-box" id="gateForm">
+    <div class="gate-mark">Z</div>
+    <h1>ZenithCore Console</h1>
+    <p>Nhập <code>CONSOLE_TOKEN</code> đã cấu hình trong biến môi trường của service.</p>
+    <input id="tokenInput" type="password" autocomplete="current-password" placeholder="console token" required />
+    <button class="btn primary" type="submit" id="gateBtn">Mở phiên làm việc</button>
+    <div class="err" id="gateErr"></div>
+  </form>
+</div>
+
+<!-- ============================== shell ============================== -->
+<div class="shell hidden" id="shell">
+
+  <!-- rail -->
+  <nav class="rail">
+    <div class="brand">Z</div>
+    <button data-view="terminal" data-label="Terminal" class="active">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+    </button>
+    <button data-view="ports" data-label="Ports & Web UI">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><line x1="7" y1="7.5" x2="7.01" y2="7.5"/><line x1="7" y1="17" x2="7.01" y2="17"/></svg>
+    </button>
+    <button data-view="apps" data-label="Ứng dụng">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+    </button>
+    <button data-view="proxy" data-label="Proxy & Tunnel">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="6" r="2.6"/><circle cx="18" cy="18" r="2.6"/><path d="M8.4 10.8 15.6 7.2M8.4 13.2l7.2 3.6"/></svg>
+    </button>
+    <button data-view="desktop" data-label="Desktop GUI">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="12.5" rx="1.5"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="16.5" x2="12" y2="20"/></svg>
+    </button>
+    <button data-view="jobs" data-label="Tiến trình & Jobs">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/><circle cx="19" cy="18" r="2.4"/></svg>
+    </button>
+    <button data-view="system" data-label="System">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></svg>
+    </button>
+    <div class="spacer"></div>
+    <button id="logoutBtn" data-label="Đăng xuất">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 17l5-5-5-5"/><line x1="20" y1="12" x2="9" y2="12"/><path d="M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h5"/></svg>
+    </button>
+  </nav>
+
+  <!-- topbar -->
+  <div class="topbar">
+    <div class="tabs" id="tabs"></div>
+    <div class="tools">
+      <button class="btn ghost" id="newTabBtn" title="Phiên mới">+ Phiên</button>
+      <button class="btn ghost" id="clearBtn">Clear</button>
+      <button class="btn ghost" id="reconnectBtn">Reconnect</button>
+    </div>
+  </div>
+
+  <!-- main -->
+  <main class="main">
+
+    <!-- ---------------------------------------------------- terminal -->
+    <section class="view terminal-view active" data-view="terminal">
+      <div class="term-host" id="termHost"></div>
+      <div class="empty-state hidden" id="termEmpty">
+        <div>Chưa có phiên nào đang mở</div>
+        <button class="btn primary" id="emptyNewTab">Tạo phiên terminal</button>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------- ports -->
+    <section class="view" data-view="ports">
+      <div class="page">
+        <div class="page-head">
+          <h2>Ports &amp; Web UI</h2>
+          <div class="row">
+            <button class="btn" id="refreshPorts">Làm mới</button>
+            <label class="btn ghost" style="cursor:pointer">
+              <input type="checkbox" id="autoPorts" checked style="width:auto;height:auto;margin:0" /> Tự động
+            </label>
+          </div>
+        </div>
+        <p class="sub">
+          Mọi service đang lắng nghe trên <code>127.0.0.1:PORT</code> bên trong container đều mở được qua
+          <code>/p/PORT/</code>. Hỗ trợ HTTP, WebSocket và tự viết lại đường dẫn tuyệt đối — dùng được
+          code-server, noVNC, panel quản trị, Jupyter, Grafana… mà không cần cấu hình thêm.
+        </p>
+
+        <div class="panel">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:90px">Port</th>
+                <th>Tiến trình</th>
+                <th style="width:80px">PID</th>
+                <th style="width:110px">Địa chỉ</th>
+                <th style="width:230px"></th>
+              </tr>
+            </thead>
+            <tbody id="portRows">
+              <tr><td colspan="5" class="empty-row">Đang quét…</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="section">
+          <h3>Mở thủ công</h3>
+          <div class="panel"><div class="panel-body">
+            <div class="row">
+              <div class="field">
+                <label>Port trong container</label>
+                <input type="number" id="manualPort" min="1" max="65535" placeholder="8080" />
+              </div>
+              <button class="btn primary" id="openManual">Mở /p/PORT/</button>
+              <button class="btn" id="copyManual">Copy link</button>
+            </div>
+            <div class="hint" style="margin-top:10px">
+              Nếu panel yêu cầu đường dẫn gốc, chạy nó với tuỳ chọn base-path
+              (ví dụ <code>code-server --abs-proxy-base-path /p/8080</code>) để có kết quả chuẩn nhất.
+            </div>
+          </div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------- proxy -->
+    <section class="view" data-view="proxy">
+      <div class="page">
+        <div class="page-head"><h2>Proxy &amp; Tunnel</h2></div>
+        <p class="sub">
+          Nền tảng host chỉ mở duy nhất một cổng HTTP công khai. Console này bắc cầu TCP-over-WebSocket
+          tại <code>/ws/tcp?port=</code>, nên bạn có thể chạy bất kỳ SOCKS5/HTTP proxy nào bên trong
+          container rồi dùng nó từ máy cá nhân như proxy thật.
+        </p>
+
+        <div class="section">
+          <h3>1 — Dựng proxy trong container</h3>
+
+          <div class="panel"><div class="panel-body">
+            <div class="row" style="margin-bottom:12px">
+              <div class="field">
+                <label>Xác thực (tuỳ chọn) — user</label>
+                <input type="text" id="pxUser" placeholder="để trống nếu không cần" />
+              </div>
+              <div class="field">
+                <label>Mật khẩu</label>
+                <input type="password" id="pxPass" placeholder="chữ, số và . _ @ -" />
+              </div>
+              <button class="btn" id="refreshProxy">Làm mới</button>
+              <button class="btn danger" id="pxStopAll">Dừng tất cả</button>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Loại</th>
+                  <th style="width:110px">Port</th>
+                  <th style="width:110px">Trạng thái</th>
+                  <th style="width:200px"></th>
+                </tr>
+              </thead>
+              <tbody id="proxyRows">
+                <tr><td colspan="4" class="empty-row">Đang tải…</td></tr>
+              </tbody>
+            </table>
+            <div class="hint" style="margin-top:10px">
+              Proxy chỉ nghe trên loopback trong container; đưa ra máy bạn bằng bridge ở bước 2.
+            </div>
+          </div></div>
+
+          <div class="grid c2" style="margin-top:12px">
+            <div class="panel"><div class="panel-body">
+              <div class="field"><label>SOCKS5 (MicroSocks) — cổng 1080</label></div>
+              <div class="copy-wrap">
+                <pre class="code" id="cmdSocks">zenith proxy socks5 1080</pre>
+                <button class="btn ghost" data-copy="cmdSocks">Copy</button>
+              </div>
+              <div class="hint">Không cần xác thực, chỉ nghe trên loopback — bảo vệ bởi token của console.</div>
+            </div></div>
+
+            <div class="panel"><div class="panel-body">
+              <div class="field"><label>HTTP proxy (Tinyproxy) — cổng 8888</label></div>
+              <div class="copy-wrap">
+                <pre class="code" id="cmdHttp">zenith proxy http 8888</pre>
+                <button class="btn ghost" data-copy="cmdHttp">Copy</button>
+              </div>
+              <div class="hint">Dùng cho <code>http_proxy</code> / <code>https_proxy</code> hoặc trình duyệt.</div>
+            </div></div>
+          </div>
+          <div class="note" style="margin-top:12px">
+            Có sẵn: <code>microsocks</code>, <code>tinyproxy</code>, <code>privoxy</code>,
+            <code>squid</code>, <code>proxychains4</code>, <code>socat</code>, <code>redsocks</code>.
+            Cài thêm gì cũng được: <code>apt-get install -y &lt;package&gt;</code>.
+          </div>
+        </div>
+
+        <div class="section">
+          <h3>2 — Đưa proxy ra máy của bạn</h3>
+          <div class="panel"><div class="panel-body">
+            <div class="row" style="margin-bottom:12px">
+              <div class="field">
+                <label>Port proxy trong container</label>
+                <input type="number" id="bridgePort" value="1080" min="1" max="65535" />
+              </div>
+              <div class="field">
+                <label>Port local trên máy bạn</label>
+                <input type="number" id="localPort" value="1080" min="1" max="65535" />
+              </div>
+            </div>
+            <div class="copy-wrap">
+              <pre class="code" id="bridgeCmd">…</pre>
+              <button class="btn ghost" data-copy="bridgeCmd">Copy</button>
+            </div>
+            <div class="hint">
+              Cần Node.js trên máy bạn. Lệnh này mở một listener TCP local rồi chuyển tiếp toàn bộ byte
+              qua WebSocket tới proxy trong container. Sau đó trỏ ứng dụng vào
+              <code id="proxyTarget">socks5://127.0.0.1:1080</code>.
+            </div>
+          </div></div>
+
+          <div class="panel"><div class="panel-body">
+            <div class="field"><label>Cách khác — script bridge có sẵn (Python, không cần cài gì)</label></div>
+            <div class="copy-wrap">
+              <pre class="code" id="pyBridge">…</pre>
+              <button class="btn ghost" data-copy="pyBridge">Copy</button>
+            </div>
+            <div class="hint">Tải <code>zenith-bridge.py</code> từ chính console rồi chạy bằng Python 3.</div>
+          </div></div>
+        </div>
+
+        <div class="section">
+          <h3>3 — Kiểm tra nhanh</h3>
+          <div class="copy-wrap">
+            <pre class="code" id="verifyCmd">curl -x socks5h://127.0.0.1:1080 https://ifconfig.me</pre>
+            <button class="btn ghost" data-copy="verifyCmd">Copy</button>
+          </div>
+        </div>
+
+        <div class="section">
+          <h3>Proxy đi ra ngoài (cho chính container)</h3>
+          <div class="panel"><div class="panel-body">
+            <div class="row" style="margin-bottom:12px">
+              <div class="field">
+                <label>URL proxy thượng nguồn</label>
+                <input type="text" id="outUrl" placeholder="socks5://user:pass@host:1080" />
+              </div>
+              <button class="btn primary" id="outSet">Áp dụng</button>
+              <button class="btn" id="outClear">Xoá</button>
+            </div>
+            <div class="hint" id="outCurrent" style="margin-bottom:12px">Chưa cấu hình.</div>
+
+            <div class="field">
+              <label>Hoặc đặt thủ công trong shell</label>
+            </div>
+            <pre class="code">export http_proxy=http://user:pass@host:port
+export https_proxy=$http_proxy
+export all_proxy=socks5://user:pass@host:port
+# hoặc dùng proxychains cho mọi chương trình
+proxychains4 curl https://ifconfig.me</pre>
+            <div class="hint">Sửa <code>/etc/proxychains4.conf</code> để cấu hình chuỗi proxy cố định.</div>
+          </div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ----------------------------------------------------- desktop -->
+    <section class="view" data-view="desktop">
+      <div class="page">
+        <div class="page-head"><h2>Desktop GUI</h2></div>
+        <p class="sub">
+          Chạy môi trường đồ hoạ đầy đủ (XFCE) qua VNC rồi xem trực tiếp trong trình duyệt bằng noVNC —
+          đi xuyên qua reverse proxy nên không cần mở thêm cổng nào.
+        </p>
+
+        <div class="grid c2">
+          <div class="panel"><div class="panel-body">
+            <div class="field"><label>Khởi động desktop</label></div>
+            <div class="copy-wrap">
+              <pre class="code" id="cmdDesk">zenith desktop start</pre>
+              <button class="btn ghost" data-copy="cmdDesk">Copy</button>
+            </div>
+            <div class="hint">
+              Lần đầu sẽ tự cài XFCE + TigerVNC + noVNC (vài phút). VNC ở <code>5901</code>,
+              noVNC ở <code>6080</code>.
+            </div>
+            <div class="row" style="margin-top:14px">
+              <button class="btn primary" id="openDesktop">Mở desktop</button>
+              <button class="btn" id="runDesktop">Chạy lệnh trong terminal</button>
+            </div>
+          </div></div>
+
+          <div class="panel"><div class="panel-body">
+            <div class="field"><label>Lệnh khác</label></div>
+            <pre class="code">zenith desktop stop      # dừng
+zenith desktop status    # kiểm tra
+zenith desktop install   # chỉ cài, không chạy</pre>
+            <div class="hint">Kích thước mặc định 1440x900. Đổi: <code>zenith desktop start 1920x1080</code>.</div>
+          </div></div>
+        </div>
+
+        <div class="section">
+          <h3>Trình duyệt trong desktop</h3>
+          <div class="panel"><div class="panel-body">
+            <pre class="code">apt-get update &amp;&amp; apt-get install -y firefox-esr
+# chạy Firefox qua proxy SOCKS5 nội bộ
+firefox-esr</pre>
+            <div class="note warn" style="margin-top:12px">
+              GUI tốn RAM. Trên gói hosting free (khoảng 512 MB) XFCE có thể chậm — cân nhắc
+              <code>zenith desktop start --light</code> để dùng openbox thay vì XFCE.
+            </div>
+          </div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- -------------------------------------------------------- apps -->
+    <section class="view" data-view="apps">
+      <div class="page">
+        <div class="page-head">
+          <h2>Ứng dụng</h2>
+          <button class="btn" id="refreshApps">Làm mới</button>
+        </div>
+        <p class="sub">
+          Cài và chạy các web UI phổ biến chỉ bằng một nút. Mọi thao tác chạy nền qua
+          <code>zenith app</code>; theo dõi log tại tab <em>Tiến trình &amp; Jobs</em>.
+        </p>
+
+        <div class="note warn hidden" id="appsNoZenith">
+          Không tìm thấy <code>zenith</code> CLI trong container — các nút cài/chạy sẽ không hoạt động.
+        </div>
+
+        <div class="grid c2" id="appCards"></div>
+
+        <div class="section">
+          <h3>Cài gói apt bất kỳ</h3>
+          <div class="panel"><div class="panel-body">
+            <div class="row">
+              <div class="field">
+                <label>Tên gói (cách nhau bởi dấu cách hoặc phẩy)</label>
+                <input type="text" id="pkgNames" placeholder="htop ncdu ripgrep" />
+              </div>
+              <button class="btn primary" id="pkgInstall">Cài đặt</button>
+            </div>
+            <div class="hint" style="margin-top:10px">
+              Tối đa 40 gói mỗi lần. Tiến trình cài chạy nền, xem log ở tab Jobs.
+            </div>
+          </div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- -------------------------------------------------------- jobs -->
+    <section class="view" data-view="jobs">
+      <div class="page">
+        <div class="page-head">
+          <h2>Tiến trình &amp; Jobs</h2>
+          <div class="row">
+            <button class="btn" id="refreshJobs">Làm mới</button>
+            <label class="btn ghost" style="cursor:pointer">
+              <input type="checkbox" id="autoJobs" checked style="width:auto;height:auto;margin:0" /> Tự động
+            </label>
+          </div>
+        </div>
+        <p class="sub">
+          Job là các lệnh nền do console khởi chạy (cài app, bật proxy, apt install).
+          Bảng tiến trình đọc trực tiếp từ <code>/proc</code>.
+        </p>
+
+        <div class="section">
+          <h3>Chạy lệnh nền</h3>
+          <div class="panel"><div class="panel-body">
+            <div class="row">
+              <div class="field">
+                <label>Lệnh shell</label>
+                <input type="text" id="execCmd" placeholder="apt-get update" />
+              </div>
+              <button class="btn primary" id="execRun">Chạy</button>
+            </div>
+            <div class="hint" style="margin-top:10px">
+              Chạy bằng quyền root như trong terminal. Kết quả hiện ở danh sách job bên dưới.
+            </div>
+          </div></div>
+        </div>
+
+        <div class="section">
+          <h3>Jobs</h3>
+          <div class="panel">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:60px">ID</th>
+                  <th>Nhãn</th>
+                  <th style="width:110px">Trạng thái</th>
+                  <th style="width:70px">Mã</th>
+                  <th style="width:170px"></th>
+                </tr>
+              </thead>
+              <tbody id="jobRows">
+                <tr><td colspan="5" class="empty-row">Chưa có job nào</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="panel hidden" id="jobLogPanel"><div class="panel-body">
+            <div class="field"><label id="jobLogTitle">Log</label></div>
+            <pre class="code" id="jobLog" style="max-height:320px;overflow:auto">…</pre>
+            <div class="row" style="margin-top:10px">
+              <button class="btn" id="jobLogClose">Đóng</button>
+              <button class="btn danger" id="jobLogStop">Dừng job</button>
+            </div>
+          </div></div>
+        </div>
+
+        <div class="section">
+          <h3>Tiến trình ngốn RAM nhất</h3>
+          <div class="panel">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:80px">PID</th>
+                  <th style="width:140px">Tên</th>
+                  <th>Lệnh</th>
+                  <th style="width:80px">RSS</th>
+                  <th style="width:150px"></th>
+                </tr>
+              </thead>
+              <tbody id="procRows">
+                <tr><td colspan="5" class="empty-row">Đang tải…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------ system -->
+    <section class="view" data-view="system">
+      <div class="page">
+        <div class="page-head">
+          <h2>System</h2>
+          <button class="btn" id="refreshSys">Làm mới</button>
+        </div>
+        <p class="sub">Số liệu đọc trực tiếp từ <code>/proc</code> bên trong container.</p>
+
+        <div class="grid c4">
+          <div class="metric"><div class="k">CPU</div><div class="v" id="mCpu">—</div><div class="bar"><i id="bCpu"></i></div></div>
+          <div class="metric"><div class="k">Bộ nhớ</div><div class="v" id="mMem">—</div><div class="bar"><i id="bMem"></i></div></div>
+          <div class="metric"><div class="k">Đĩa /</div><div class="v" id="mDisk">—</div><div class="bar"><i id="bDisk"></i></div></div>
+          <div class="metric"><div class="k">Uptime</div><div class="v" id="mUp">—</div></div>
+        </div>
+
+        <div class="section">
+          <h3>Thông tin máy</h3>
+          <div class="panel">
+            <table><tbody id="sysRows"></tbody></table>
+          </div>
+        </div>
+
+        <div class="section">
+          <h3>Ghi chú giới hạn thật sự</h3>
+          <div class="panel"><div class="panel-body">
+            <ul class="clean">
+              <li>Bạn có toàn quyền root <em>bên trong</em> container: cài gói, chạy service, mở port nội bộ tuỳ ý.</li>
+              <li>Reverse proxy và TCP bridge gỡ bỏ giới hạn "chỉ một cổng public" của nền tảng host.</li>
+              <li>Không thể làm: nạp kernel module, KVM/nested virtualization, sửa kernel host, dùng cổng public khác ngoài cổng được cấp.</li>
+              <li>Hệ thống file thường không bền vững sau khi deploy lại — lưu dữ liệu quan trọng ra ngoài.</li>
+            </ul>
+          </div></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- statusbar -->
+  <div class="statusbar">
+    <div class="item"><span class="dot" id="sDot"></span><span id="sState">disconnected</span></div>
+    <div class="item" id="sHost">—</div>
+    <div class="item" id="sDebian">—</div>
+    <div class="item push" id="sSessions">0 phiên</div>
+    <div class="item" id="sSize">—</div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

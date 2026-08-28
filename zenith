@@ -1,0 +1,855 @@
+#!/bin/bash
+# ZenithCore helper CLI — proxy, web apps, desktop GUI and services in the container.
+set -uo pipefail
+
+STATE_DIR=/var/lib/zenith
+LOG_DIR=/var/log/zenith
+mkdir -p "$STATE_DIR" "$LOG_DIR" "$STATE_DIR/svc"
+
+PROXY_STATE="$STATE_DIR/proxy.json"
+APP_STATE="$STATE_DIR/apps.json"
+OUT_STATE="$STATE_DIR/outbound.json"
+
+C_OK=$'\e[38;5;72m'; C_WARN=$'\e[38;5;178m'; C_ERR=$'\e[38;5;167m'; C_DIM=$'\e[38;5;244m'; C_OFF=$'\e[0m'
+say()  { echo "${C_OK}::${C_OFF} $*"; }
+warn() { echo "${C_WARN}!!${C_OFF} $*"; }
+die()  { echo "${C_ERR}xx${C_OFF} $*" >&2; exit 1; }
+dim()  { echo "${C_DIM}$*${C_OFF}"; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# --------------------------------------------------------------------- state
+# Tiny JSON state helpers. Python3 always exists in this image.
+
+state_set() { # file key json_value
+  python3 - "$1" "$2" "$3" <<'PY'
+import json, sys, os
+path, key, raw = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(path) as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        data = {}
+except Exception:
+    data = {}
+try:
+    value = json.loads(raw)
+except Exception:
+    value = raw
+if key:
+    cur = data.get(key)
+    if isinstance(cur, dict) and isinstance(value, dict):
+        cur.update(value)
+        data[key] = cur
+    else:
+        data[key] = value
+else:
+    data = value if isinstance(value, dict) else {}
+tmp = path + ".tmp"
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(tmp, "w") as fh:
+    json.dump(data, fh, indent=2, sort_keys=True)
+os.replace(tmp, path)
+PY
+}
+
+state_get() { # file key [subkey]
+  python3 - "$1" "$2" "${3:-}" <<'PY'
+import json, sys
+path, key, sub = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(path) as fh:
+        data = json.load(fh)
+except Exception:
+    data = {}
+node = data.get(key) if key else data
+if sub and isinstance(node, dict):
+    node = node.get(sub)
+if node is None:
+    print("")
+elif isinstance(node, (dict, list)):
+    print(json.dumps(node))
+else:
+    print(node)
+PY
+}
+
+json_escape() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
+
+ensure_pkg() {
+  local missing=()
+  for p in "$@"; do
+    dpkg -s "$p" >/dev/null 2>&1 || missing+=("$p")
+  done
+  if [ ${#missing[@]} -gt 0 ]; then
+    say "Cài gói: ${missing[*]}"
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}" \
+      || die "Không cài được: ${missing[*]}"
+  fi
+}
+
+port_busy() {
+  ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1\$" && return 0
+  python3 - "$1" <<'PY'
+import socket, sys
+s = socket.socket()
+s.settimeout(0.6)
+sys.exit(0 if s.connect_ex(("127.0.0.1", int(sys.argv[1]))) == 0 else 1)
+PY
+}
+
+wait_port() { # port timeout_seconds
+  local port="$1" limit="${2:-12}" i=0
+  while [ "$i" -lt "$limit" ]; do
+    port_busy "$port" && return 0
+    sleep 1; i=$((i + 1))
+  done
+  return 1
+}
+
+# Parse --flag value pairs, leaving positional args in POSITIONAL.
+OPT_PORT=""; OPT_PASSWORD=""; OPT_AUTH=""; OPT_LIGHT=""; OPT_GEOMETRY=""
+parse_opts() {
+  POSITIONAL=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --port)     OPT_PORT="${2:-}"; shift 2 ;;
+      --password) OPT_PASSWORD="${2:-}"; shift 2 ;;
+      --auth)     OPT_AUTH="${2:-}"; shift 2 ;;
+      --geometry) OPT_GEOMETRY="${2:-}"; shift 2 ;;
+      --light)    OPT_LIGHT="--light"; shift ;;
+      *x*[0-9])   OPT_GEOMETRY="$1"; POSITIONAL+=("$1"); shift ;;
+      *)          POSITIONAL+=("$1"); shift ;;
+    esac
+  done
+}
+
+split_auth() { # "user:pass" -> AUTH_USER / AUTH_PASS
+  AUTH_USER=""; AUTH_PASS=""
+  [ -n "${1:-}" ] || return 0
+  AUTH_USER="${1%%:*}"
+  AUTH_PASS="${1#*:}"
+  [ "$AUTH_USER" = "$1" ] && AUTH_PASS=""
+  case "$AUTH_USER$AUTH_PASS" in
+    *[!A-Za-z0-9._@-]*) die "User/mật khẩu chỉ cho phép chữ, số và . _ @ -" ;;
+  esac
+}
+
+# --------------------------------------------------------------------- proxy
+
+record_proxy() { # kind port authflag user
+  state_set "$PROXY_STATE" "$1" \
+    "$(python3 -c 'import json,sys; print(json.dumps({"port":int(sys.argv[1]),"auth":sys.argv[2]=="1","user":sys.argv[3]}))' "$2" "$3" "$4")"
+}
+
+proxy_socks5() {
+  local port="${1:-1080}"
+  split_auth "${OPT_AUTH:-}"
+  ensure_pkg microsocks
+
+  local args=(microsocks -i 0.0.0.0 -p "$port")
+  if [ -n "$AUTH_USER" ]; then
+    args+=(-u "$AUTH_USER" -P "$AUTH_PASS")
+  fi
+
+  pkill -f "microsocks .*-p $port" 2>/dev/null
+  sleep 0.3
+  nohup "${args[@]}" >>"$LOG_DIR/microsocks.out" 2>&1 &
+
+  if wait_port "$port" 10; then
+    record_proxy socks5 "$port" "$([ -n "$AUTH_USER" ] && echo 1 || echo 0)" "$AUTH_USER"
+    if [ -n "$AUTH_USER" ]; then
+      say "SOCKS5 chạy trên 127.0.0.1:$port (auth: $AUTH_USER)"
+    else
+      say "SOCKS5 chạy trên 127.0.0.1:$port (không cần auth)"
+    fi
+    dim "   Đưa ra máy bạn bằng tab Proxy trong console, hoặc:"
+    dim "   python3 zenith-bridge.py --local $port --url wss://<host>/ws/tcp?port=$port --token <TOKEN>"
+  else
+    warn "Không thấy port $port lắng nghe. Log: $LOG_DIR/microsocks.out"
+    return 1
+  fi
+}
+
+proxy_http() {
+  local port="${1:-8888}"
+  split_auth "${OPT_AUTH:-}"
+  ensure_pkg tinyproxy
+  mkdir -p /etc/tinyproxy
+  {
+    echo "User nobody"
+    echo "Group nogroup"
+    echo "Port $port"
+    echo "Timeout 600"
+    echo "LogFile \"$LOG_DIR/tinyproxy.log\""
+    echo "LogLevel Info"
+    echo "MaxClients 200"
+    echo "Allow 127.0.0.1"
+    echo "Allow 0.0.0.0/0"
+    echo "ViaProxyName \"zenith\""
+    echo "ConnectPort 443"
+    echo "ConnectPort 563"
+    [ -n "$AUTH_USER" ] && echo "BasicAuth $AUTH_USER $AUTH_PASS"
+  } >/etc/tinyproxy/tinyproxy.conf
+
+  pkill tinyproxy 2>/dev/null
+  sleep 0.3
+  tinyproxy -c /etc/tinyproxy/tinyproxy.conf
+
+  if wait_port "$port" 10; then
+    record_proxy http "$port" "$([ -n "$AUTH_USER" ] && echo 1 || echo 0)" "$AUTH_USER"
+    say "HTTP proxy chạy trên 127.0.0.1:$port"
+  else
+    warn "Không khởi động được, xem $LOG_DIR/tinyproxy.log"
+    return 1
+  fi
+}
+
+proxy_squid() {
+  local port="${1:-3128}"
+  split_auth "${OPT_AUTH:-}"
+  ensure_pkg squid
+  local conf=/etc/squid/squid.conf
+  [ -f "$conf" ] || echo "http_access allow all" >"$conf"
+  sed -i "s/^http_port .*/http_port $port/" "$conf" 2>/dev/null
+  grep -q "^http_port $port" "$conf" || echo "http_port $port" >>"$conf"
+
+  if [ -n "$AUTH_USER" ]; then
+    ensure_pkg apache2-utils
+    htpasswd -bc /etc/squid/passwd "$AUTH_USER" "$AUTH_PASS" >/dev/null 2>&1
+    local helper
+    helper="$(ls /usr/lib/squid/basic_ncsa_auth /usr/lib/squid3/basic_ncsa_auth 2>/dev/null | head -1)"
+    if [ -n "$helper" ]; then
+      sed -i '/^auth_param basic/d;/^acl zenith_users/d;/^http_access allow zenith_users/d' "$conf"
+      {
+        echo "auth_param basic program $helper /etc/squid/passwd"
+        echo "auth_param basic children 5"
+        echo "auth_param basic realm zenith"
+        echo "acl zenith_users proxy_auth REQUIRED"
+        echo "http_access allow zenith_users"
+      } >>"$conf"
+    else
+      warn "Không tìm thấy basic_ncsa_auth, bỏ qua xác thực"
+    fi
+  else
+    sed -i "s/^http_access deny all/http_access allow all/" "$conf" 2>/dev/null
+    grep -q "^http_access allow all" "$conf" || echo "http_access allow all" >>"$conf"
+  fi
+
+  pkill squid 2>/dev/null; sleep 0.5
+  squid -f "$conf"
+  if wait_port "$port" 14; then
+    record_proxy squid "$port" "$([ -n "$AUTH_USER" ] && echo 1 || echo 0)" "$AUTH_USER"
+    say "Squid chạy trên 127.0.0.1:$port"
+  else
+    warn "Squid chưa lên, xem /var/log/squid/"
+    return 1
+  fi
+}
+
+proxy_privoxy() {
+  local port="${1:-8118}"
+  ensure_pkg privoxy
+  mkdir -p /etc/privoxy
+  local conf=/etc/privoxy/config
+  if [ -f "$conf" ]; then
+    sed -i "s/^listen-address .*/listen-address 0.0.0.0:$port/" "$conf"
+    grep -q "^listen-address" "$conf" || echo "listen-address 0.0.0.0:$port" >>"$conf"
+  else
+    printf 'confdir /etc/privoxy\nlogdir %s\nlisten-address 0.0.0.0:%s\n' "$LOG_DIR" "$port" >"$conf"
+  fi
+  pkill privoxy 2>/dev/null; sleep 0.3
+  privoxy --no-daemon "$conf" >>"$LOG_DIR/privoxy.out" 2>&1 &
+  if wait_port "$port" 10; then
+    record_proxy privoxy "$port" 0 ""
+    say "Privoxy chạy trên 127.0.0.1:$port"
+  else
+    warn "Privoxy chưa lên, xem $LOG_DIR/privoxy.out"
+    return 1
+  fi
+}
+
+proxy_stop() {
+  local which="${1:-all}"
+  case "$which" in
+    socks5)  pkill -f microsocks 2>/dev/null; say "Đã dừng SOCKS5" ;;
+    http)    pkill tinyproxy 2>/dev/null; say "Đã dừng HTTP proxy" ;;
+    squid)   pkill squid 2>/dev/null; say "Đã dừng Squid" ;;
+    privoxy) pkill privoxy 2>/dev/null; say "Đã dừng Privoxy" ;;
+    all|"")
+      pkill -f microsocks 2>/dev/null
+      pkill tinyproxy 2>/dev/null
+      pkill squid 2>/dev/null
+      pkill privoxy 2>/dev/null
+      say "Đã dừng tất cả proxy" ;;
+    *) die "Không rõ proxy: $which" ;;
+  esac
+  return 0
+}
+
+proxy_status() {
+  echo "Proxy đang chạy:"
+  pgrep -a microsocks 2>/dev/null | sed 's/^/  socks5  /'
+  pgrep -a tinyproxy 2>/dev/null | sed 's/^/  http    /'
+  pgrep -a squid     2>/dev/null | sed 's/^/  squid   /'
+  pgrep -a privoxy   2>/dev/null | sed 's/^/  privoxy /'
+  echo
+  echo "Cổng đang lắng nghe:"
+  ss -ltnp 2>/dev/null | tail -n +2 | awk '{print "  " $4 "   " $6}'
+  echo
+  echo "Proxy đi ra:"
+  local url; url="$(state_get "$OUT_STATE" url)"
+  [ -n "$url" ] && echo "  $url" || dim "  (chưa đặt)"
+}
+
+# ------------------------------------------------------------ outbound proxy
+
+OUT_ENV=/etc/profile.d/zenith-proxy.sh
+OUT_APT=/etc/apt/apt.conf.d/99zenith-proxy
+
+proxy_out_set() {
+  local url="${1:-}"
+  [ -n "$url" ] || die "Dùng: zenith proxy out set <scheme://[user:pass@]host:port>"
+  case "$url" in
+    http://*|https://*|socks4://*|socks4a://*|socks5://*|socks5h://*) ;;
+    *) die "URL phải bắt đầu bằng http/https/socks4/socks4a/socks5/socks5h" ;;
+  esac
+
+  cat >"$OUT_ENV" <<EOF
+# generated by: zenith proxy out set
+export http_proxy="$url"
+export https_proxy="$url"
+export HTTP_PROXY="$url"
+export HTTPS_PROXY="$url"
+export all_proxy="$url"
+export ALL_PROXY="$url"
+export no_proxy="localhost,127.0.0.1,::1"
+export NO_PROXY="\$no_proxy"
+EOF
+  chmod 644 "$OUT_ENV"
+
+  case "$url" in
+    http://*|https://*)
+      mkdir -p /etc/apt/apt.conf.d
+      printf 'Acquire::http::Proxy "%s";\nAcquire::https::Proxy "%s";\n' "$url" "$url" >"$OUT_APT" ;;
+    *)
+      rm -f "$OUT_APT" ;;
+  esac
+
+  # proxychains4 chain
+  if [ -f /etc/proxychains4.conf ]; then
+    python3 - "$url" <<'PY'
+import re, sys
+url = sys.argv[1]
+m = re.match(r'^(?P<s>\w+)://(?:(?P<u>[^:@/]+):(?P<p>[^@/]*)@)?(?P<h>[^:/]+):(?P<port>\d+)', url)
+if m:
+    scheme = m.group('s').lower()
+    kind = 'socks5' if scheme.startswith('socks5') else \
+           'socks4' if scheme.startswith('socks4') else 'http'
+    line = f"{kind} {m.group('h')} {m.group('port')}"
+    if m.group('u'):
+        line += f" {m.group('u')} {m.group('p')}"
+    path = '/etc/proxychains4.conf'
+    with open(path) as fh:
+        text = fh.read()
+    head, sep, _ = text.partition('[ProxyList]')
+    if sep:
+        with open(path, 'w') as fh:
+            fh.write(head + sep + "\n" + line + "\n")
+PY
+  fi
+
+  state_set "$OUT_STATE" "" "$(python3 -c 'import json,sys; print(json.dumps({"url":sys.argv[1],"set_at":__import__("time").strftime("%Y-%m-%d %H:%M:%S")}))' "$url")"
+  export http_proxy="$url" https_proxy="$url" all_proxy="$url"
+  say "Đã đặt proxy đi ra: $url"
+  dim "   Shell mới sẽ tự nạp. Shell hiện tại: source $OUT_ENV"
+  dim "   Kiểm tra: curl -s https://ifconfig.me"
+}
+
+proxy_out_clear() {
+  rm -f "$OUT_ENV" "$OUT_APT"
+  state_set "$OUT_STATE" "" '{}'
+  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY
+  say "Đã xoá cấu hình proxy đi ra"
+  dim "   Shell đang mở cần: unset http_proxy https_proxy all_proxy"
+}
+
+proxy_out_show() {
+  local url; url="$(state_get "$OUT_STATE" url)"
+  if [ -n "$url" ]; then
+    say "Proxy đi ra: $url"
+    [ -f "$OUT_APT" ] && dim "   apt: đã cấu hình"
+  else
+    dim "Chưa đặt proxy đi ra"
+  fi
+}
+
+# ----------------------------------------------------------------- services
+# Generic supervisor: run any command as a background service with a pidfile.
+
+svc_start() { # name port command...
+  local name="$1" port="$2"; shift 2
+  local pidfile="$STATE_DIR/svc/$name.pid"
+  local log="$LOG_DIR/$name.log"
+  mkdir -p "$STATE_DIR/svc" "$LOG_DIR"
+  svc_stop "$name" >/dev/null 2>&1
+  # setsid detaches the service into its own session so it survives the CLI
+  # exiting. It is not present on every environment, so fall back to nohup.
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" >>"$log" 2>&1 </dev/null &
+  else
+    nohup "$@" >>"$log" 2>&1 </dev/null &
+  fi
+  echo $! >"$pidfile"
+  if [ "$port" != "-" ] && ! wait_port "$port" 25; then
+    warn "$name chưa mở port $port. Log: $log"
+    tail -n 15 "$log" 2>/dev/null | sed 's/^/    /'
+    return 1
+  fi
+  return 0
+}
+
+svc_stop() {
+  local name="$1"
+  local pidfile="$STATE_DIR/svc/$name.pid"
+  if [ -f "$pidfile" ]; then
+    local pid; pid="$(cat "$pidfile")"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+      sleep 0.5
+      kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+    fi
+    rm -f "$pidfile"
+  fi
+  return 0
+}
+
+svc_list() {
+  echo "Dịch vụ do zenith quản lý:"
+  local found=0
+  for f in "$STATE_DIR"/svc/*.pid; do
+    [ -e "$f" ] || continue
+    found=1
+    local name pid state
+    name="$(basename "$f" .pid)"
+    pid="$(cat "$f" 2>/dev/null)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then state="running"; else state="stopped"; fi
+    printf "  %-16s pid=%-8s %s\n" "$name" "${pid:-–}" "$state"
+  done
+  [ "$found" = 0 ] && dim "  (chưa có)"
+  return 0
+}
+
+# ---------------------------------------------------------------- web apps
+
+app_port() { # id default
+  local saved; saved="$(state_get "$APP_STATE" "$1" port)"
+  echo "${OPT_PORT:-${saved:-$2}}"
+}
+
+record_app() { # id port installed extra_json
+  state_set "$APP_STATE" "$1" \
+    "$(python3 -c 'import json,sys; print(json.dumps({"port":int(sys.argv[1]),"installed":sys.argv[2]=="1","extra":json.loads(sys.argv[3])}))' "$2" "$3" "${4:-\{\}}")"
+}
+
+fetch_bin() { # url dest
+  say "Tải $(basename "$2")"
+  curl -fsSL "$1" -o "$2" || return 1
+  chmod +x "$2"
+}
+
+arch_tag() {
+  case "$(uname -m)" in
+    x86_64|amd64) echo amd64 ;;
+    aarch64|arm64) echo arm64 ;;
+    *) echo unsupported ;;
+  esac
+}
+
+# --- code-server ------------------------------------------------------------
+app_install_code_server() {
+  have code-server && { say "code-server đã có sẵn"; return 0; }
+  ensure_pkg curl ca-certificates
+  say "Cài code-server (vài phút)"
+  curl -fsSL https://code-server.dev/install.sh | sh || die "Cài code-server thất bại"
+}
+
+app_start_code_server() {
+  local port; port="$(app_port code-server 8080)"
+  local pass="${OPT_PASSWORD:-$(state_get "$APP_STATE" code-server extra | python3 -c 'import json,sys; d=sys.stdin.read().strip(); print(json.loads(d).get("password","") if d else "")' 2>/dev/null)}"
+  [ -n "$pass" ] || pass="$(openssl rand -hex 12)"
+  mkdir -p /root/.config/code-server
+  cat >/root/.config/code-server/config.yaml <<EOF
+bind-addr: 127.0.0.1:$port
+auth: password
+password: $pass
+cert: false
+EOF
+  svc_start code-server "$port" code-server --bind-addr "127.0.0.1:$port" || return 1
+  record_app code-server "$port" 1 "$(python3 -c 'import json,sys; print(json.dumps({"password":sys.argv[1]}))' "$pass")"
+  say "code-server chạy tại /p/$port/"
+  dim "   Mật khẩu: $pass"
+}
+
+# --- filebrowser ------------------------------------------------------------
+app_install_filebrowser() {
+  have filebrowser && { say "filebrowser đã có"; return 0; }
+  ensure_pkg curl ca-certificates
+  curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash \
+    || die "Cài filebrowser thất bại"
+}
+
+app_start_filebrowser() {
+  local port; port="$(app_port filebrowser 8081)"
+  local db=/var/lib/zenith/filebrowser.db
+  local pass="${OPT_PASSWORD:-}"
+  [ -n "$pass" ] || pass="$(openssl rand -hex 8)"
+  rm -f "$db"
+  filebrowser config init -d "$db" >/dev/null 2>&1
+  filebrowser config set -d "$db" --address 127.0.0.1 --port "$port" --root / >/dev/null 2>&1
+  filebrowser users add admin "$pass" -d "$db" --perm.admin >/dev/null 2>&1
+  svc_start filebrowser "$port" filebrowser -d "$db" || return 1
+  record_app filebrowser "$port" 1 "$(python3 -c 'import json,sys; print(json.dumps({"user":"admin","password":sys.argv[1]}))' "$pass")"
+  say "File Browser chạy tại /p/$port/  (admin / $pass)"
+}
+
+# --- ttyd -------------------------------------------------------------------
+app_install_ttyd() {
+  have ttyd && { say "ttyd đã có"; return 0; }
+  if ! ensure_pkg ttyd 2>/dev/null; then
+    local a; a="$(arch_tag)"
+    [ "$a" = unsupported ] && die "Kiến trúc không hỗ trợ"
+    fetch_bin "https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.$(uname -m)" \
+      /usr/local/bin/ttyd || die "Cài ttyd thất bại"
+  fi
+}
+
+app_start_ttyd() {
+  local port; port="$(app_port ttyd 8082)"
+  local args=(ttyd -p "$port" -i 127.0.0.1 -W)
+  [ -n "${OPT_PASSWORD:-}" ] && args+=(-c "admin:$OPT_PASSWORD")
+  svc_start ttyd "$port" "${args[@]}" || return 1
+  record_app ttyd "$port" 1 "$(python3 -c 'import json,sys; print(json.dumps({"password":sys.argv[1]}))' "${OPT_PASSWORD:-}")"
+  say "ttyd chạy tại /p/$port/"
+}
+
+# --- dufs -------------------------------------------------------------------
+app_install_dufs() {
+  have dufs && { say "dufs đã có"; return 0; }
+  local a; a="$(arch_tag)"
+  [ "$a" = unsupported ] && die "Kiến trúc không hỗ trợ"
+  local triple=x86_64-unknown-linux-musl
+  [ "$a" = arm64 ] && triple=aarch64-unknown-linux-musl
+  ensure_pkg curl ca-certificates tar
+  local tmp; tmp="$(mktemp -d)"
+  curl -fsSL "https://github.com/sigoden/dufs/releases/latest/download/dufs-latest-$triple.tar.gz" \
+    -o "$tmp/dufs.tgz" || die "Tải dufs thất bại"
+  tar -xzf "$tmp/dufs.tgz" -C "$tmp" && install -m755 "$tmp/dufs" /usr/local/bin/dufs
+  rm -rf "$tmp"
+}
+
+app_start_dufs() {
+  local port; port="$(app_port dufs 8083)"
+  local args=(dufs / -b 127.0.0.1 -p "$port" -A)
+  [ -n "${OPT_PASSWORD:-}" ] && args+=(-a "admin:$OPT_PASSWORD@/:rw")
+  svc_start dufs "$port" "${args[@]}" || return 1
+  record_app dufs "$port" 1 '{}'
+  say "dufs chạy tại /p/$port/"
+}
+
+# --- jupyter ----------------------------------------------------------------
+app_install_jupyter() {
+  ensure_pkg python3-pip python3-venv
+  [ -x /opt/jupyter/bin/jupyter ] && { say "JupyterLab đã có"; return 0; }
+  python3 -m venv /opt/jupyter
+  /opt/jupyter/bin/pip install --no-cache-dir --upgrade pip >/dev/null
+  say "Cài JupyterLab (vài phút)"
+  /opt/jupyter/bin/pip install --no-cache-dir jupyterlab || die "Cài JupyterLab thất bại"
+}
+
+app_start_jupyter() {
+  local port; port="$(app_port jupyter 8888)"
+  local token="${OPT_PASSWORD:-}"
+  [ -n "$token" ] || token="$(openssl rand -hex 12)"
+  svc_start jupyter "$port" /opt/jupyter/bin/jupyter lab \
+    --ip=127.0.0.1 --port="$port" --allow-root --no-browser \
+    --ServerApp.token="$token" --ServerApp.base_url="/p/$port" \
+    --ServerApp.allow_origin='*' --ServerApp.trust_xheaders=True || return 1
+  record_app jupyter "$port" 1 "$(python3 -c 'import json,sys; print(json.dumps({"token":sys.argv[1]}))' "$token")"
+  say "JupyterLab chạy tại /p/$port/lab?token=$token"
+}
+
+# --- desktop ----------------------------------------------------------------
+DESK_DISPLAY=":1"
+DESK_VNC_PORT=5901
+DESK_WEB_PORT=6080
+
+desktop_install() {
+  local light="${1:-}"
+  if [ "$light" = "--light" ]; then
+    ensure_pkg openbox tigervnc-standalone-server tigervnc-common novnc websockify \
+               xterm x11-xserver-utils dbus-x11 fonts-dejavu-core
+  else
+    ensure_pkg xfce4 xfce4-terminal xfce4-goodies tigervnc-standalone-server tigervnc-common \
+               novnc websockify dbus-x11 x11-xserver-utils fonts-dejavu-core
+  fi
+  say "Đã cài xong môi trường desktop"
+}
+
+desktop_start() {
+  local geometry="${OPT_GEOMETRY:-1440x900}" light="${OPT_LIGHT:-}"
+  for arg in "$@"; do
+    case "$arg" in
+      --light) light="--light" ;;
+      *x*)     geometry="$arg" ;;
+    esac
+  done
+
+  have vncserver  || desktop_install "$light"
+  have websockify || ensure_pkg novnc websockify
+
+  mkdir -p /root/.vnc
+  if [ "$light" = "--light" ]; then
+    cat >/root/.vnc/xstartup <<'EOF'
+#!/bin/sh
+unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS
+xsetroot -solid "#15181c"
+exec openbox-session
+EOF
+  else
+    cat >/root/.vnc/xstartup <<'EOF'
+#!/bin/sh
+unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS
+export XDG_CURRENT_DESKTOP=XFCE
+xsetroot -solid "#15181c"
+exec dbus-launch --exit-with-session startxfce4
+EOF
+  fi
+  chmod +x /root/.vnc/xstartup
+
+  vncserver -kill "$DESK_DISPLAY" >/dev/null 2>&1
+  rm -f "/tmp/.X11-unix/X${DESK_DISPLAY#:}" "/tmp/.X${DESK_DISPLAY#:}-lock" 2>/dev/null
+
+  say "Khởi động VNC ($geometry) trên $DESK_DISPLAY"
+  vncserver "$DESK_DISPLAY" -geometry "$geometry" -depth 24 \
+    -SecurityTypes None -localhost no >"$LOG_DIR/vnc.log" 2>&1
+
+  sleep 2
+  local web_root=/usr/share/novnc
+  [ -d "$web_root" ] || web_root=/usr/share/webapps/novnc
+  svc_start novnc "$DESK_WEB_PORT" websockify --web="$web_root" \
+    "$DESK_WEB_PORT" "localhost:$DESK_VNC_PORT" || {
+      warn "noVNC chưa lên. Log: $LOG_DIR/novnc.log"; return 1; }
+
+  record_app desktop "$DESK_WEB_PORT" 1 '{}'
+  say "Desktop sẵn sàng tại /p/$DESK_WEB_PORT/vnc.html?autoconnect=1"
+}
+
+desktop_stop() {
+  vncserver -kill "$DESK_DISPLAY" >/dev/null 2>&1
+  svc_stop novnc
+  pkill -f "websockify.*$DESK_WEB_PORT" 2>/dev/null
+  say "Đã dừng desktop"
+}
+
+desktop_status() {
+  if port_busy "$DESK_VNC_PORT"; then say "VNC đang chạy (:$DESK_VNC_PORT)"; else warn "VNC không chạy"; fi
+  if port_busy "$DESK_WEB_PORT"; then say "noVNC đang chạy (:$DESK_WEB_PORT)"; else warn "noVNC không chạy"; fi
+}
+
+# --- app dispatcher ---------------------------------------------------------
+
+app_dispatch() { # action id
+  local action="$1" id="$2"
+  case "$id" in
+    code-server)
+      case "$action" in
+        install) app_install_code_server ;;
+        start)   app_install_code_server && app_start_code_server ;;
+        stop)    svc_stop code-server; say "Đã dừng code-server" ;;
+        remove)  svc_stop code-server; rm -f /usr/bin/code-server /usr/lib/code-server 2>/dev/null;
+                 apt-get remove -y -qq code-server 2>/dev/null; say "Đã gỡ code-server" ;;
+      esac ;;
+    filebrowser)
+      case "$action" in
+        install) app_install_filebrowser ;;
+        start)   app_install_filebrowser && app_start_filebrowser ;;
+        stop)    svc_stop filebrowser; say "Đã dừng filebrowser" ;;
+        remove)  svc_stop filebrowser; rm -f /usr/local/bin/filebrowser; say "Đã gỡ filebrowser" ;;
+      esac ;;
+    ttyd)
+      case "$action" in
+        install) app_install_ttyd ;;
+        start)   app_install_ttyd && app_start_ttyd ;;
+        stop)    svc_stop ttyd; say "Đã dừng ttyd" ;;
+        remove)  svc_stop ttyd; rm -f /usr/local/bin/ttyd; apt-get remove -y -qq ttyd 2>/dev/null;
+                 say "Đã gỡ ttyd" ;;
+      esac ;;
+    dufs)
+      case "$action" in
+        install) app_install_dufs ;;
+        start)   app_install_dufs && app_start_dufs ;;
+        stop)    svc_stop dufs; say "Đã dừng dufs" ;;
+        remove)  svc_stop dufs; rm -f /usr/local/bin/dufs; say "Đã gỡ dufs" ;;
+      esac ;;
+    jupyter)
+      case "$action" in
+        install) app_install_jupyter ;;
+        start)   app_install_jupyter && app_start_jupyter ;;
+        stop)    svc_stop jupyter; say "Đã dừng JupyterLab" ;;
+        remove)  svc_stop jupyter; rm -rf /opt/jupyter; say "Đã gỡ JupyterLab" ;;
+      esac ;;
+    desktop|desktop-light)
+      [ "$id" = desktop-light ] && OPT_LIGHT="--light"
+      case "$action" in
+        install) desktop_install "${OPT_LIGHT:-}" ;;
+        start)   desktop_start "${OPT_LIGHT:-}" ;;
+        stop)    desktop_stop ;;
+        remove)  desktop_stop; say "Desktop đã dừng (gói hệ thống giữ nguyên)" ;;
+      esac ;;
+    *) die "Không rõ ứng dụng: $id" ;;
+  esac
+}
+
+app_list() {
+  printf "  %-14s %-7s %-9s %s\n" ID PORT TRẠNG_THÁI ĐƯỜNG_DẪN
+  local ids="code-server:8080:/ filebrowser:8081:/ ttyd:8082:/ dufs:8083:/ jupyter:8888:/lab desktop:6080:/vnc.html"
+  for spec in $ids; do
+    local id="${spec%%:*}" rest="${spec#*:}"
+    local dport="${rest%%:*}" path="${rest#*:}"
+    local port; port="$(state_get "$APP_STATE" "$id" port)"; port="${port:-$dport}"
+    local state="stopped"; port_busy "$port" && state="running"
+    printf "  %-14s %-7s %-9s /p/%s%s\n" "$id" "$port" "$state" "$port" "$path"
+  done
+}
+
+# ---------------------------------------------------------------------- misc
+
+cmd_ports() {
+  echo "Cổng đang lắng nghe trong container:"
+  ss -ltnp 2>/dev/null | tail -n +2 | awk '{printf "  %-24s %s\n", $4, $6}'
+  echo
+  dim "Mọi cổng ở trên đều mở được qua  /p/<PORT>/  trên URL công khai."
+}
+
+cmd_expose() {
+  local port="${1:-}"
+  [ -n "$port" ] || die "Dùng: zenith expose <port>"
+  echo "  /p/$port/"
+  dim "Dán đường dẫn này sau domain công khai của bạn."
+}
+
+usage() {
+  cat <<'EOF'
+zenith — công cụ điều khiển ZenithCore
+
+  PROXY (phục vụ ra ngoài)
+    zenith proxy socks5  [port] [--auth user:pass]   MicroSocks, mặc định 1080
+    zenith proxy http    [port] [--auth user:pass]   Tinyproxy, mặc định 8888
+    zenith proxy squid   [port] [--auth user:pass]   Squid, mặc định 3128
+    zenith proxy privoxy [port]                      Privoxy, mặc định 8118
+    zenith proxy status                              liệt kê proxy đang chạy
+    zenith proxy stop [socks5|http|squid|privoxy]    dừng (mặc định tất cả)
+
+  PROXY ĐI RA (cho chính container)
+    zenith proxy out set <scheme://[user:pass@]host:port>
+    zenith proxy out clear
+    zenith proxy out show
+
+  ỨNG DỤNG WEB
+    zenith app install|start|stop|remove <id> [--port N] [--password P]
+    zenith app list
+      id: code-server  filebrowser  ttyd  dufs  jupyter  desktop  desktop-light
+
+  DESKTOP GUI
+    zenith desktop start [WxH] [--light]
+    zenith desktop stop | status | install [--light]
+
+  DỊCH VỤ TUỲ Ý
+    zenith svc start <tên> <port|-> <lệnh...>
+    zenith svc stop  <tên>
+    zenith svc list
+
+  KHÁC
+    zenith ports                   liệt kê cổng đang lắng nghe
+    zenith expose <port>           in đường dẫn reverse proxy
+
+Mọi service nghe trên 127.0.0.1:<port> đều truy cập được qua /p/<port>/.
+Với TCP thuần (SOCKS5...), dùng bridge tại /ws/tcp?port=<port>.
+EOF
+}
+
+# ------------------------------------------------------------------ dispatch
+
+MAIN="${1:-}"; shift 2>/dev/null || true
+
+case "$MAIN" in
+  proxy)
+    SUB="${1:-}"; shift 2>/dev/null || true
+    if [ "$SUB" = out ]; then
+      case "${1:-show}" in
+        set)   proxy_out_set "${2:-}" ;;
+        clear) proxy_out_clear ;;
+        show)  proxy_out_show ;;
+        *)     usage; exit 1 ;;
+      esac
+      exit $?
+    fi
+    parse_opts "$@"
+    set -- ${POSITIONAL+"${POSITIONAL[@]}"}
+    case "$SUB" in
+      socks5)  proxy_socks5  "${1:-1080}" ;;
+      http)    proxy_http    "${1:-8888}" ;;
+      squid)   proxy_squid   "${1:-3128}" ;;
+      privoxy) proxy_privoxy "${1:-8118}" ;;
+      status)  proxy_status ;;
+      stop)    proxy_stop "${1:-all}" ;;
+      *)       usage; exit 1 ;;
+    esac ;;
+
+  app)
+    ACTION="${1:-}"; shift 2>/dev/null || true
+    if [ "$ACTION" = list ]; then app_list; exit 0; fi
+    parse_opts "$@"
+    set -- ${POSITIONAL+"${POSITIONAL[@]}"}
+    case "$ACTION" in
+      install|start|stop|remove)
+        [ -n "${1:-}" ] || die "Dùng: zenith app $ACTION <id>"
+        app_dispatch "$ACTION" "$1" ;;
+      *) usage; exit 1 ;;
+    esac ;;
+
+  desktop)
+    SUB="${1:-}"; shift 2>/dev/null || true
+    parse_opts "$@"
+    set -- ${POSITIONAL+"${POSITIONAL[@]}"}
+    case "$SUB" in
+      start)   desktop_start "$@" ;;
+      stop)    desktop_stop ;;
+      status)  desktop_status ;;
+      install) desktop_install "${OPT_LIGHT:-${1:-}}" ;;
+      *)       usage; exit 1 ;;
+    esac ;;
+
+  svc)
+    SUB="${1:-}"; shift 2>/dev/null || true
+    case "$SUB" in
+      start)
+        [ $# -ge 3 ] || die "Dùng: zenith svc start <tên> <port|-> <lệnh...>"
+        NAME="$1"; PORT="$2"; shift 2
+        if svc_start "$NAME" "$PORT" "$@"; then
+          say "Dịch vụ $NAME đang chạy${PORT:+ (port $PORT)}"
+        else
+          exit 1
+        fi ;;
+      stop)  [ -n "${1:-}" ] || die "Dùng: zenith svc stop <tên>"; svc_stop "$1"; say "Đã dừng $1" ;;
+      list)  svc_list ;;
+      *)     usage; exit 1 ;;
+    esac ;;
+
+  ports)  cmd_ports ;;
+  expose) cmd_expose "${1:-}" ;;
+  ""|-h|--help|help) usage ;;
+  *) usage; exit 1 ;;
+esac
