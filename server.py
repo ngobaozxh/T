@@ -607,6 +607,24 @@ def zenith_available() -> bool:
     return Path(ZENITH_BIN).exists()
 
 
+def _svc_pid(name: str) -> Optional[int]:
+    """Read a zenith-managed service pidfile and check if it is still alive."""
+    pidfile = STATE_DIR / "svc" / f"{name}.pid"
+    try:
+        pid = int(pidfile.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        return pid
+    except OSError:
+        return None
+    return pid
+
+
 def _state_json(name: str) -> Dict[str, Any]:
     path = STATE_DIR / name
     try:
@@ -921,6 +939,57 @@ async def api_proxy_outbound(request: Request) -> JSONResponse:
             {"error": "URL phải dạng scheme://[user:pass@]host:port"}, status_code=400)
     command = " ".join(shlex.quote(a) for a in [ZENITH_BIN, "proxy", "out", "set", url])
     job = await JOBS.spawn(command, "Đặt proxy đi ra")
+    return JSONResponse({"ok": True, "job": job.brief()})
+
+
+# --------------------------------------------------------------------------- #
+# Public tunnel API (Cloudflare Tunnel via the zenith CLI)
+# --------------------------------------------------------------------------- #
+
+_TUNNEL_URL_RE = re.compile(r"^https?://[^\s\"']{3,300}$", re.I)
+
+
+@app.get("/api/tunnel")
+def api_tunnel_state(request: Request) -> JSONResponse:
+    if not authorized(request):
+        return deny()
+    saved = _state_json("tunnel.json")
+    running = _svc_pid("cloudflared") is not None
+    return JSONResponse({
+        "available": shutil.which("cloudflared") is not None,
+        "zenith": zenith_available(),
+        "running": running,
+        "mode": saved.get("mode") if running else None,
+        "url": saved.get("url") if running else None,
+        "token_configured": bool(os.environ.get("CLOUDFLARE_TUNNEL_TOKEN")),
+        "public_port": int(os.environ.get("PORT", "10000")),
+    })
+
+
+@app.post("/api/tunnel/start")
+async def api_tunnel_start(request: Request) -> JSONResponse:
+    if not authorized(request):
+        return deny()
+    body = await read_json(request)
+    target = str(body.get("target", "")).strip()
+    if target and not _TUNNEL_URL_RE.match(target):
+        return JSONResponse(
+            {"error": "Target phải dạng http(s)://host:port"}, status_code=400)
+
+    args = [ZENITH_BIN, "tunnel", "start"]
+    if target:
+        args.append(target)
+    command = " ".join(shlex.quote(a) for a in args)
+    job = await JOBS.spawn(command, "Khởi động public tunnel")
+    return JSONResponse({"ok": True, "job": job.brief()})
+
+
+@app.post("/api/tunnel/stop")
+async def api_tunnel_stop(request: Request) -> JSONResponse:
+    if not authorized(request):
+        return deny()
+    command = " ".join(shlex.quote(a) for a in [ZENITH_BIN, "tunnel", "stop"])
+    job = await JOBS.spawn(command, "Dừng public tunnel")
     return JSONResponse({"ok": True, "job": job.brief()})
 
 

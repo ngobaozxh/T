@@ -441,6 +441,69 @@ svc_list() {
   return 0
 }
 
+# --------------------------------------------------------------- public tunnel
+# Cloudflare Tunnel: another way to get a public URL besides the platform's
+# own domain and the /p/<port>/ reverse proxy. Two modes:
+#   - quick tunnel (no account/token needed): random *.trycloudflare.com URL
+#   - named tunnel (CLOUDFLARE_TUNNEL_TOKEN set): stable URL on your own domain
+TUNNEL_STATE="$STATE_DIR/tunnel.json"
+TUNNEL_LOG="$LOG_DIR/cloudflared.log"
+
+tunnel_start() {
+  have cloudflared || die "cloudflared chưa có trong image (chỉ hỗ trợ amd64/arm64)"
+
+  svc_stop cloudflared >/dev/null 2>&1
+
+  local target="${1:-http://127.0.0.1:${PORT:-10000}}"
+  if [ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]; then
+    say "Khởi động Cloudflare named tunnel (token đã cấu hình)"
+    svc_start cloudflared - cloudflared tunnel run --token "$CLOUDFLARE_TUNNEL_TOKEN" || return 1
+    state_set "$TUNNEL_STATE" "" '{"mode":"named"}'
+    say "Tunnel đang chạy. Xem domain đã gán ở Cloudflare Zero Trust dashboard."
+    return 0
+  fi
+
+  say "Khởi động Cloudflare quick tunnel -> $target"
+  rm -f "$TUNNEL_LOG"
+  svc_start cloudflared - cloudflared tunnel --no-autoupdate --url "$target" || return 1
+
+  local url="" i=0
+  while [ "$i" -lt 20 ]; do
+    url="$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | head -1)"
+    [ -n "$url" ] && break
+    sleep 1; i=$((i + 1))
+  done
+
+  if [ -n "$url" ]; then
+    state_set "$TUNNEL_STATE" "" "$(python3 -c 'import json,sys; print(json.dumps({"mode":"quick","url":sys.argv[1]}))' "$url")"
+    say "Public URL: $url"
+    dim "   URL này đổi mỗi lần khởi động lại tunnel. Dùng CLOUDFLARE_TUNNEL_TOKEN để có domain cố định."
+  else
+    warn "Chưa thấy URL, xem log: $TUNNEL_LOG"
+    tail -n 20 "$TUNNEL_LOG" 2>/dev/null | sed 's/^/    /'
+    return 1
+  fi
+}
+
+tunnel_stop() {
+  svc_stop cloudflared
+  state_set "$TUNNEL_STATE" "" '{}'
+  say "Đã dừng tunnel"
+}
+
+tunnel_status() {
+  local pidfile="$STATE_DIR/svc/cloudflared.pid"
+  if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; then
+    local mode url
+    mode="$(state_get "$TUNNEL_STATE" mode)"
+    url="$(state_get "$TUNNEL_STATE" url)"
+    say "Tunnel đang chạy (mode: ${mode:-?})"
+    [ -n "$url" ] && echo "  $url"
+  else
+    dim "Tunnel không chạy. Dùng: zenith tunnel start"
+  fi
+}
+
 # ---------------------------------------------------------------- web apps
 
 app_port() { # id default
@@ -766,6 +829,12 @@ zenith — công cụ điều khiển ZenithCore
     zenith desktop start [WxH] [--light]
     zenith desktop stop | status | install [--light]
 
+  PUBLIC TUNNEL (mở IP/URL công khai bằng Cloudflare, không cần Railway TCP Proxy)
+    zenith tunnel start [url nội bộ, mặc định http://127.0.0.1:<PORT>]
+    zenith tunnel stop | status
+      không token  -> quick tunnel *.trycloudflare.com (random, miễn phí, không cần đăng ký)
+      có CLOUDFLARE_TUNNEL_TOKEN -> named tunnel, domain cố định của bạn
+
   DỊCH VỤ TUỲ Ý
     zenith svc start <tên> <port|-> <lệnh...>
     zenith svc stop  <tên>
@@ -830,6 +899,15 @@ case "$MAIN" in
       status)  desktop_status ;;
       install) desktop_install "${OPT_LIGHT:-${1:-}}" ;;
       *)       usage; exit 1 ;;
+    esac ;;
+
+  tunnel)
+    SUB="${1:-}"; shift 2>/dev/null || true
+    case "$SUB" in
+      start)  tunnel_start "${1:-}" ;;
+      stop)   tunnel_stop ;;
+      status) tunnel_status ;;
+      *)      usage; exit 1 ;;
     esac ;;
 
   svc)

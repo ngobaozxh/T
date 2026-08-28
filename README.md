@@ -12,7 +12,8 @@ bridge TCP-over-WebSocket để dùng proxy trong container từ máy cá nhân,
 | **Terminal đa phiên** | Nhiều tab bash độc lập, mỗi tab là một PTY riêng. `Ctrl+Shift+T` mở tab mới. |
 | **Reverse proxy** | Mọi service ở `127.0.0.1:PORT` mở được tại `/p/PORT/`. Hỗ trợ HTTP, WebSocket, tự viết lại đường dẫn tuyệt đối. |
 | **TCP bridge** | `/ws/tcp?port=N` bắc cầu TCP thật qua WebSocket — dùng SOCKS5/HTTP proxy trong container từ máy bạn. |
-| **Desktop GUI** | `zenith desktop start` dựng XFCE + TigerVNC + noVNC, xem ngay trong console. |
+| **Desktop GUI** | Openbox/XFCE + TigerVNC + noVNC đã **bake sẵn trong image** và **tự khởi động khi container start** (giống pattern `railway-ubuntu-novnc` / `docker-ubuntu-vnc-desktop`) — xem `/p/6080/vnc.html` ngay không cần gõ lệnh. |
+| **Public tunnel** | `zenith tunnel start` dùng Cloudflare Tunnel (miễn phí) để có thêm một URL HTTPS công khai, độc lập với domain của nền tảng host. |
 | **Proxy stack** | Cài sẵn microsocks, tinyproxy, privoxy, squid, proxychains4, redsocks, socat. |
 | **Giám sát** | CPU / RAM / disk / uptime / danh sách cổng đang lắng nghe, đọc trực tiếp từ `/proc`. |
 
@@ -30,6 +31,11 @@ Biến môi trường:
 |---|---|---|
 | `CONSOLE_TOKEN` | Nên đặt | Chuỗi bí mật dài. Nếu bỏ trống, container tự sinh token và in ra log khi khởi động. |
 | `PORT` | Không | Nền tảng host tự cấp. |
+| `ZENITH_AUTOSTART_DESKTOP` | Không | Mặc định `1` — tự bật desktop GUI (VNC+noVNC) ngay khi container start. Đặt `0` để tắt và bật thủ công bằng `zenith desktop start`. |
+| `ZENITH_DESKTOP_GEOMETRY` | Không | Độ phân giải desktop khi autostart, mặc định `1440x900`. |
+| `ZENITH_DESKTOP_LIGHT` | Không | Mặc định `1` — dùng Openbox (nhẹ RAM) thay vì XFCE khi autostart. Đặt `0` để dùng XFCE đầy đủ. |
+| `ZENITH_AUTOSTART_TUNNEL` | Không | Đặt `1` để tự bật Cloudflare Tunnel ngay khi container start. |
+| `CLOUDFLARE_TUNNEL_TOKEN` | Không | Token của named tunnel (Cloudflare Zero Trust) để có domain public cố định thay vì URL ngẫu nhiên `*.trycloudflare.com`. |
 
 ### Chạy thử local
 
@@ -137,21 +143,73 @@ proxychains4 curl https://ifconfig.me
 
 ## Desktop GUI
 
-```bash
-zenith desktop start                 # XFCE, 1440x900
-zenith desktop start 1920x1080       # đổi độ phân giải
-zenith desktop start --light         # openbox, nhẹ RAM hơn nhiều
-zenith desktop status
-zenith desktop stop
-```
-
-Sau đó mở tab **Desktop GUI** trong console, hoặc truy cập:
+Đã bake sẵn trong image và **tự khởi động khi container start** (biến `ZENITH_AUTOSTART_DESKTOP=1`,
+mặc định bật) — không cần cài gì thêm hay gõ lệnh, mở domain Railway lên rồi vào:
 
 ```
 https://<domain>/p/6080/vnc.html?autoconnect=1&resize=remote
 ```
 
-VNC nghe ở `5901`, noVNC ở `6080`. Trên gói hosting RAM thấp nên dùng `--light`.
+hoặc bấm tab **Desktop GUI** trong console. VNC nghe ở `5901`, noVNC ở `6080`.
+
+Điều khiển thủ công nếu cần:
+
+```bash
+zenith desktop start                 # XFCE, 1440x900
+zenith desktop start 1920x1080       # đổi độ phân giải
+zenith desktop start --light         # openbox, nhẹ RAM hơn nhiều (mặc định khi autostart)
+zenith desktop status
+zenith desktop stop
+```
+
+Trên gói hosting RAM thấp nên giữ `--light` (openbox). Nếu muốn XFCE đầy đủ khi autostart, đặt
+`ZENITH_DESKTOP_LIGHT=0`.
+
+---
+
+## Mở IP/URL public — tất cả các cách
+
+Nền tảng như Railway chỉ cấp **một** domain HTTPS công khai cho container (không có IP tĩnh
+riêng cho TCP thuần). Dự án này gộp đủ 4 cách để "mở ra ngoài", dùng cách nào tuỳ nhu cầu:
+
+### Cách 1 — Domain có sẵn của nền tảng + reverse proxy `/p/<port>/`
+
+Không cần cấu hình gì. Mọi service nghe ở `127.0.0.1:<port>` trong container tự động truy cập
+được tại `https://<domain>/p/<port>/` (xem mục "Mở web UI của bất kỳ service nào" bên dưới).
+
+### Cách 2 — TCP bridge qua WebSocket (`/ws/tcp?port=`)
+
+Dùng cho giao thức TCP thuần không phải HTTP (SOCKS5, Postgres, Redis, SSH…) đi qua domain
+HTTPS có sẵn, không cần Railway mở thêm cổng nào (xem mục "Dùng proxy trong container..." bên dưới).
+
+### Cách 3 — Cloudflare Tunnel (miễn phí, thêm 1 URL public độc lập)
+
+```bash
+zenith tunnel start          # quick tunnel: URL ngẫu nhiên *.trycloudflare.com, không cần đăng ký
+zenith tunnel status
+zenith tunnel stop
+```
+
+Muốn domain cố định thay vì URL ngẫu nhiên: tạo **named tunnel** trong
+[Cloudflare Zero Trust dashboard](https://one.dash.cloudflare.com/) → lấy token → đặt biến môi
+trường `CLOUDFLARE_TUNNEL_TOKEN` trong Railway → `zenith tunnel start` sẽ tự dùng token đó.
+Đặt `ZENITH_AUTOSTART_TUNNEL=1` để tunnel tự chạy ngay khi container start.
+
+Ưu điểm so với cách 1/2: tunnel hỗ trợ TCP thật (không cần bridge), domain riêng, không phụ
+thuộc giới hạn 1-port của nền tảng.
+
+### Cách 4 — Railway TCP Proxy (tính năng trả phí của Railway, IP:port thật)
+
+Nếu cần một địa chỉ `IP:port` TCP thật do chính Railway cấp (ví dụ để trỏ DNS riêng, dùng cho
+client không hỗ trợ WebSocket/HTTP), bật trực tiếp trong Railway dashboard:
+
+1. Vào service → tab **Settings** → mục **Networking**
+2. Chọn **TCP Proxy** → nhập port nội bộ trong container (ví dụ `1080` cho SOCKS5, `5901` cho VNC)
+3. Railway cấp một `IP:port` public trỏ thẳng vào cổng đó — tính năng này nằm ngoài phạm vi
+   Dockerfile/CLI của repo, cấu hình hoàn toàn ở dashboard.
+
+> Ghi chú: TCP Proxy là tính năng riêng của Railway (không phải mọi nền tảng Docker hosting đều
+> có). Nếu nền tảng bạn dùng không hỗ trợ, dùng cách 1–3 ở trên.
 
 ---
 
@@ -162,6 +220,7 @@ zenith ports                  liệt kê cổng đang lắng nghe
 zenith expose <port>          in đường dẫn reverse proxy
 zenith proxy   <socks5|http|squid|status|stop> [port]
 zenith desktop <start|stop|status|install> [WxH] [--light]
+zenith tunnel  <start|stop|status> [url nội bộ]
 ```
 
 ---

@@ -241,6 +241,7 @@ function switchView(name) {
   if (name === 'system') loadSystem();
   if (name === 'apps') loadApps();
   if (name === 'proxy') loadProxy();
+  if (name === 'desktop') loadTunnel();
   if (name === 'jobs') { loadJobs(); loadProcesses(); }
 }
 
@@ -611,6 +612,65 @@ async function setOutbound(action) {
   }
 }
 
+/* --------------------------------------------------------------- tunnel */
+
+async function loadTunnel() {
+  let data;
+  try { data = await api('/api/tunnel'); } catch (_) { return; }
+
+  const noCf = $('#tunnelNoCf');
+  if (noCf) noCf.classList.toggle('hidden', data.available !== false);
+
+  const state = $('#tunnelState');
+  if (state) {
+    state.textContent = data.running ? `đang chạy (${data.mode || '?'})` : 'tắt';
+    state.className = 'pill' + (data.running ? ' ok' : '');
+  }
+
+  const wrap = $('#tunnelUrlWrap');
+  const urlEl = $('#tunnelUrl');
+  if (wrap && urlEl) {
+    if (data.running && data.url) {
+      urlEl.textContent = data.url;
+      wrap.hidden = false;
+    } else {
+      wrap.hidden = true;
+    }
+  }
+
+  const startBtn = $('#tunnelStart');
+  const stopBtn = $('#tunnelStop');
+  if (startBtn) startBtn.disabled = data.available === false;
+  if (stopBtn) stopBtn.disabled = !data.running;
+}
+
+async function startTunnel() {
+  const btn = $('#tunnelStart');
+  btn.disabled = true;
+  try {
+    const target = $('#tunnelTarget').value.trim();
+    trackJob(await postJson('/api/tunnel/start', target ? { target } : {}), 'Khởi động tunnel');
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+    setTimeout(loadTunnel, 2500);
+  }
+}
+
+async function stopTunnel() {
+  const btn = $('#tunnelStop');
+  btn.disabled = true;
+  try {
+    trackJob(await postJson('/api/tunnel/stop', {}), 'Dừng tunnel');
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+    setTimeout(loadTunnel, 2000);
+  }
+}
+
 /* ----------------------------------------------------------------- jobs */
 
 let followJobId = null;
@@ -920,6 +980,12 @@ document.addEventListener('DOMContentLoaded', () => {
       btn.disabled = false;
     }
   };
+
+  /* public tunnel */
+  $('#refreshTunnel').onclick = loadTunnel;
+  $('#tunnelStart').onclick = startTunnel;
+  $('#tunnelStop').onclick = stopTunnel;
+  $('#tunnelTarget').addEventListener('keydown', (e) => { if (e.key === 'Enter') startTunnel(); });
 
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-copy]');

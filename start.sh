@@ -27,6 +27,32 @@ fi
 
 export CONSOLE_TOKEN
 
+# --- auto-start GUI desktop (XFCE/Openbox + TigerVNC + noVNC) ---------------
+# Mirrors the railway-ubuntu-novnc / docker-ubuntu-vnc-desktop pattern: the
+# desktop is already baked into the image, so it comes up by itself and is
+# reachable at /p/6080/vnc.html the moment the container is healthy.
+if [ "${ZENITH_AUTOSTART_DESKTOP:-1}" = "1" ]; then
+  (
+    sleep 1
+    args=(desktop start "${ZENITH_DESKTOP_GEOMETRY:-1440x900}")
+    [ "${ZENITH_DESKTOP_LIGHT:-1}" = "1" ] && args+=(--light)
+    /usr/local/bin/zenith "${args[@]}" >>/var/log/zenith/autostart-desktop.log 2>&1 \
+      || echo "[autostart] desktop start thất bại, xem /var/log/zenith/autostart-desktop.log" >&2
+  ) &
+fi
+
+# --- auto-start public tunnel (Cloudflare) -----------------------------------
+# Optional: gives a second, independent public URL besides the platform's own
+# domain. Set ZENITH_AUTOSTART_TUNNEL=1 (+ optionally CLOUDFLARE_TUNNEL_TOKEN
+# for a named/persistent tunnel) to enable.
+if [ "${ZENITH_AUTOSTART_TUNNEL:-0}" = "1" ]; then
+  (
+    sleep 2
+    /usr/local/bin/zenith tunnel start >>/var/log/zenith/autostart-tunnel.log 2>&1 \
+      || echo "[autostart] tunnel start thất bại, xem /var/log/zenith/autostart-tunnel.log" >&2
+  ) &
+fi
+
 echo "ZenithCore Console starting on 0.0.0.0:$PORT"
 
 exec /opt/venv/bin/uvicorn server:app \

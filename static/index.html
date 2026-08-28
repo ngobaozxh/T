@@ -283,8 +283,9 @@ proxychains4 curl https://ifconfig.me</pre>
       <div class="page">
         <div class="page-head"><h2>Desktop GUI</h2></div>
         <p class="sub">
-          Chạy môi trường đồ hoạ đầy đủ (XFCE) qua VNC rồi xem trực tiếp trong trình duyệt bằng noVNC —
-          đi xuyên qua reverse proxy nên không cần mở thêm cổng nào.
+          Môi trường đồ hoạ (Openbox/XFCE) qua VNC + noVNC — <b>đã bake sẵn trong image và tự khởi
+          động khi container start</b>, không cần cài gì hay gõ lệnh. Xem trực tiếp trong trình
+          duyệt, đi xuyên qua reverse proxy nên không cần mở thêm cổng nào.
         </p>
 
         <div class="grid c2">
@@ -295,8 +296,9 @@ proxychains4 curl https://ifconfig.me</pre>
               <button class="btn ghost" data-copy="cmdDesk">Copy</button>
             </div>
             <div class="hint">
-              Lần đầu sẽ tự cài XFCE + TigerVNC + noVNC (vài phút). VNC ở <code>5901</code>,
-              noVNC ở <code>6080</code>.
+              Tự bật sẵn khi container start (biến <code>ZENITH_AUTOSTART_DESKTOP=1</code>).
+              VNC ở <code>5901</code>, noVNC ở <code>6080</code>. Dùng lệnh này chỉ khi cần khởi
+              động lại hoặc đổi cấu hình.
             </div>
             <div class="row" style="margin-top:14px">
               <button class="btn primary" id="openDesktop">Mở desktop</button>
@@ -320,8 +322,53 @@ zenith desktop install   # chỉ cài, không chạy</pre>
 # chạy Firefox qua proxy SOCKS5 nội bộ
 firefox-esr</pre>
             <div class="note warn" style="margin-top:12px">
-              GUI tốn RAM. Trên gói hosting free (khoảng 512 MB) XFCE có thể chậm — cân nhắc
-              <code>zenith desktop start --light</code> để dùng openbox thay vì XFCE.
+              GUI tốn RAM. Trên gói hosting free (khoảng 512 MB) XFCE có thể chậm — mặc định
+              autostart đã dùng <code>--light</code> (openbox). Đặt biến môi trường
+              <code>ZENITH_DESKTOP_LIGHT=0</code> nếu muốn XFCE đầy đủ.
+            </div>
+          </div></div>
+        </div>
+
+        <div class="section">
+          <h3>Public tunnel (Cloudflare) — thêm một URL công khai</h3>
+          <div class="panel"><div class="panel-body">
+            <div class="note hidden" id="tunnelNoCf">
+              Không tìm thấy <code>cloudflared</code> trong container (chỉ hỗ trợ amd64/arm64) —
+              các nút bên dưới sẽ không hoạt động.
+            </div>
+            <div class="row" style="margin-bottom:12px; align-items:flex-end">
+              <div class="field" style="flex:1">
+                <label>Target nội bộ (tuỳ chọn)</label>
+                <input type="text" id="tunnelTarget" placeholder="http://127.0.0.1:10000 (mặc định cổng console)" />
+              </div>
+              <button class="btn" id="refreshTunnel">Làm mới</button>
+            </div>
+            <div class="row">
+              <button class="btn primary" id="tunnelStart">Bật tunnel</button>
+              <button class="btn danger" id="tunnelStop">Dừng tunnel</button>
+              <span id="tunnelState" class="pill">đang tải…</span>
+            </div>
+            <div class="copy-wrap" id="tunnelUrlWrap" style="margin-top:10px" hidden>
+              <pre class="code" id="tunnelUrl">—</pre>
+              <button class="btn ghost" data-copy="tunnelUrl">Copy</button>
+            </div>
+            <div class="hint" style="margin-top:10px">
+              Không cần token: tạo ngay URL ngẫu nhiên <code>*.trycloudflare.com</code>, miễn phí.
+              Muốn domain cố định: tạo named tunnel trong Cloudflare Zero Trust dashboard, đặt biến
+              môi trường <code>CLOUDFLARE_TUNNEL_TOKEN</code>, rồi bấm Bật tunnel lại.
+              Đặt <code>ZENITH_AUTOSTART_TUNNEL=1</code> để tunnel tự chạy khi container start.
+            </div>
+            <div class="field" style="margin-top:12px"><label>Hoặc gõ lệnh trực tiếp trong terminal</label></div>
+            <div class="copy-wrap">
+              <pre class="code" id="cmdTunnel">zenith tunnel start</pre>
+              <button class="btn ghost" data-copy="cmdTunnel">Copy</button>
+            </div>
+            <pre class="code" style="margin-top:10px">zenith tunnel status     # xem URL hiện tại
+zenith tunnel stop       # dừng tunnel</pre>
+            <div class="note" style="margin-top:12px">
+              Ngoài tunnel này, còn 3 cách khác để mở container ra ngoài: domain có sẵn của nền
+              tảng + <code>/p/&lt;port&gt;/</code>, TCP bridge qua WebSocket (tab Proxy &amp; Tunnel),
+              và Railway TCP Proxy (bật thủ công trong Railway dashboard → Settings → Networking).
             </div>
           </div></div>
         </div>
