@@ -67,8 +67,10 @@ COPY start.sh  /app/start.sh
 COPY zenith    /usr/local/bin/zenith
 COPY static    /app/static
 
+# --- GIỮ NGUYÊN TOÀN BỘ PHẦN TRÊN, CHỈ SỬA ĐOẠN RUN CHMOD +X NÀY ---
+
 RUN chmod +x /app/start.sh /usr/local/bin/zenith && \
-    mkdir -p /root /var/lib/zenith /var/log/zenith && \
+    mkdir -p /root /tmp/zenith_lib /tmp/zenith_log && \
     printf '%s\n' \
       "export PATH=\$PATH:/opt/venv/bin" \
       "alias ll='ls -alF --color=auto'" \
