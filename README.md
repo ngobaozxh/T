@@ -30,7 +30,7 @@ Biến môi trường:
 | Biến | Bắt buộc | Ghi chú |
 |---|---|---|
 | `CONSOLE_TOKEN` | Nên đặt | Chuỗi bí mật dài. Nếu bỏ trống, container tự sinh token và in ra log khi khởi động. |
-| `PORT` | Không | Nền tảng host tự cấp. |
+| `PORT` | Không | Nền tảng host tự cấp. Mặc định là `8888` nếu không có biến môi trường. |
 | `ZENITH_AUTOSTART_DESKTOP` | Không | Mặc định `1` — tự bật desktop GUI (VNC+noVNC) ngay khi container start. Đặt `0` để tắt và bật thủ công bằng `zenith desktop start`. |
 | `ZENITH_DESKTOP_GEOMETRY` | Không | Độ phân giải desktop khi autostart, mặc định `1440x900`. |
 | `ZENITH_DESKTOP_LIGHT` | Không | Mặc định `1` — dùng Openbox (nhẹ RAM) thay vì XFCE khi autostart. Đặt `0` để dùng XFCE đầy đủ. |

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-PORT="${PORT:-10000}"
+PORT="${PORT:-8888}"
 CONSOLE_TOKEN="${CONSOLE_TOKEN:-}"
 STATE_DIR="${ZENITH_STATE:-${HOME:-/tmp}/.zenith}"
 LOG_DIR="${ZENITH_LOG:-${STATE_DIR}/log}"
