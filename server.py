@@ -60,7 +60,7 @@ CONSOLE_TOKEN = os.environ.get("CONSOLE_TOKEN", "")
 SESSION_COOKIE = "zenith_session"
 SESSION_MAX_AGE = 7 * 24 * 3600
 BOOT_TIME = time.time()
-STATE_DIR = Path(os.environ.get("ZENITH_STATE", "/var/lib/zenith"))
+STATE_DIR = Path(os.environ.get("ZENITH_STATE", "/tmp/zenith"))
 ZENITH_BIN = shutil.which("zenith") or "/usr/local/bin/zenith"
 
 _http_client: Optional[httpx.AsyncClient] = None

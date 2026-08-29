@@ -2,8 +2,8 @@
 # ZenithCore helper CLI — proxy, web apps, desktop GUI and services in the container.
 set -uo pipefail
 
-STATE_DIR=/var/lib/zenith
-LOG_DIR=/var/log/zenith
+STATE_DIR="${ZENITH_STATE:-/tmp/zenith}"
+LOG_DIR="${ZENITH_LOG:-${STATE_DIR}/log}"
 mkdir -p "$STATE_DIR" "$LOG_DIR" "$STATE_DIR/svc"
 
 PROXY_STATE="$STATE_DIR/proxy.json"
@@ -565,7 +565,7 @@ app_install_filebrowser() {
 
 app_start_filebrowser() {
   local port; port="$(app_port filebrowser 8081)"
-  local db=/var/lib/zenith/filebrowser.db
+  local db="$STATE_DIR/filebrowser.db"
   local pass="${OPT_PASSWORD:-}"
   [ -n "$pass" ] || pass="$(openssl rand -hex 8)"
   rm -f "$db"

@@ -3,9 +3,11 @@ set -e
 
 PORT="${PORT:-10000}"
 CONSOLE_TOKEN="${CONSOLE_TOKEN:-}"
-TOKEN_FILE=/var/lib/zenith/console_token
+STATE_DIR="${ZENITH_STATE:-/tmp/zenith}"
+LOG_DIR="${ZENITH_LOG:-${STATE_DIR}/log}"
+TOKEN_FILE="$STATE_DIR/console_token"
 
-mkdir -p /run/sshd /var/lib/zenith /var/log/zenith /root
+mkdir -p /run/sshd "$STATE_DIR" "$LOG_DIR" /root
 
 if [ -z "$CONSOLE_TOKEN" ] || [ "$CONSOLE_TOKEN" = "change-me" ]; then
   if [ -s "$TOKEN_FILE" ]; then
@@ -36,8 +38,8 @@ if [ "${ZENITH_AUTOSTART_DESKTOP:-1}" = "1" ]; then
     sleep 1
     args=(desktop start "${ZENITH_DESKTOP_GEOMETRY:-1440x900}")
     [ "${ZENITH_DESKTOP_LIGHT:-1}" = "1" ] && args+=(--light)
-    /usr/local/bin/zenith "${args[@]}" >>/var/log/zenith/autostart-desktop.log 2>&1 \
-      || echo "[autostart] desktop start thất bại, xem /var/log/zenith/autostart-desktop.log" >&2
+    /usr/local/bin/zenith "${args[@]}" >>"$LOG_DIR/autostart-desktop.log" 2>&1 \
+      || echo "[autostart] desktop start thất bại, xem $LOG_DIR/autostart-desktop.log" >&2
   ) &
 fi
 
@@ -48,8 +50,8 @@ fi
 if [ "${ZENITH_AUTOSTART_TUNNEL:-0}" = "1" ]; then
   (
     sleep 2
-    /usr/local/bin/zenith tunnel start >>/var/log/zenith/autostart-tunnel.log 2>&1 \
-      || echo "[autostart] tunnel start thất bại, xem /var/log/zenith/autostart-tunnel.log" >&2
+    /usr/local/bin/zenith tunnel start >>"$LOG_DIR/autostart-tunnel.log" 2>&1 \
+      || echo "[autostart] tunnel start thất bại, xem $LOG_DIR/autostart-tunnel.log" >&2
   ) &
 fi
 

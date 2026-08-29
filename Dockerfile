@@ -7,6 +7,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     TERM=xterm-256color \
+    ZENITH_STATE=/tmp/zenith \
+    ZENITH_LOG=/tmp/zenith/log \
     ZENITH_AUTOSTART_DESKTOP=1 \
     ZENITH_DESKTOP_GEOMETRY=1440x900 \
     ZENITH_DESKTOP_LIGHT=1
@@ -67,10 +69,8 @@ COPY start.sh  /app/start.sh
 COPY zenith    /usr/local/bin/zenith
 COPY static    /app/static
 
-# --- GIỮ NGUYÊN TOÀN BỘ PHẦN TRÊN, CHỈ SỬA ĐOẠN RUN CHMOD +X NÀY ---
-
 RUN chmod +x /app/start.sh /usr/local/bin/zenith && \
-    mkdir -p /root /tmp/zenith_lib /tmp/zenith_log && \
+    mkdir -p /root "$ZENITH_STATE" "$ZENITH_LOG" && \
     printf '%s\n' \
       "export PATH=\$PATH:/opt/venv/bin" \
       "alias ll='ls -alF --color=auto'" \
