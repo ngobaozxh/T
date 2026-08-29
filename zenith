@@ -2,9 +2,13 @@
 # ZenithCore helper CLI — proxy, web apps, desktop GUI and services in the container.
 set -uo pipefail
 
-STATE_DIR="${ZENITH_STATE:-/tmp/zenith}"
+STATE_DIR="${ZENITH_STATE:-${HOME:-/tmp}/.zenith}"
 LOG_DIR="${ZENITH_LOG:-${STATE_DIR}/log}"
-mkdir -p "$STATE_DIR" "$LOG_DIR" "$STATE_DIR/svc"
+if ! mkdir -p "$STATE_DIR" "$LOG_DIR" "$STATE_DIR/svc" 2>/dev/null; then
+  STATE_DIR="/tmp/zenith"
+  LOG_DIR="/tmp/zenith/log"
+  mkdir -p "$STATE_DIR" "$LOG_DIR" "$STATE_DIR/svc" || true
+fi
 
 PROXY_STATE="$STATE_DIR/proxy.json"
 APP_STATE="$STATE_DIR/apps.json"

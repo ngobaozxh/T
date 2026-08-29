@@ -60,7 +60,27 @@ CONSOLE_TOKEN = os.environ.get("CONSOLE_TOKEN", "")
 SESSION_COOKIE = "zenith_session"
 SESSION_MAX_AGE = 7 * 24 * 3600
 BOOT_TIME = time.time()
-STATE_DIR = Path(os.environ.get("ZENITH_STATE", "/tmp/zenith"))
+
+
+def default_state_dir() -> Path:
+    candidates: List[Path] = []
+    env_state = os.environ.get("ZENITH_STATE")
+    if env_state:
+        candidates.append(Path(env_state).expanduser())
+    candidates.extend([
+        Path.home() / ".zenith",
+        Path("/tmp/zenith"),
+    ])
+    for path in candidates:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+        except OSError:
+            continue
+    return Path("/tmp/zenith")
+
+
+STATE_DIR = default_state_dir()
 ZENITH_BIN = shutil.which("zenith") or "/usr/local/bin/zenith"
 
 _http_client: Optional[httpx.AsyncClient] = None

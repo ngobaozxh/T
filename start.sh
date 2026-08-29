@@ -3,11 +3,16 @@ set -e
 
 PORT="${PORT:-10000}"
 CONSOLE_TOKEN="${CONSOLE_TOKEN:-}"
-STATE_DIR="${ZENITH_STATE:-/tmp/zenith}"
+STATE_DIR="${ZENITH_STATE:-${HOME:-/tmp}/.zenith}"
 LOG_DIR="${ZENITH_LOG:-${STATE_DIR}/log}"
 TOKEN_FILE="$STATE_DIR/console_token"
 
-mkdir -p /run/sshd "$STATE_DIR" "$LOG_DIR" /root
+mkdir -p /run/sshd /root 2>/dev/null || true
+if ! mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null; then
+  STATE_DIR="/tmp/zenith"
+  LOG_DIR="/tmp/zenith/log"
+  mkdir -p "$STATE_DIR" "$LOG_DIR" || true
+fi
 
 if [ -z "$CONSOLE_TOKEN" ] || [ "$CONSOLE_TOKEN" = "change-me" ]; then
   if [ -s "$TOKEN_FILE" ]; then
